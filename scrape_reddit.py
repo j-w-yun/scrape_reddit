@@ -2,15 +2,13 @@ import csv
 import json
 import requests
 import os
-import os.path
-import pandas as pd
-import time
 from datetime import datetime
 
 
-URL = 'https://api.pushshift.io/reddit/search/submission'
 SUBREDDIT = 'wallstreetbets'
-FILENAME = 'wsb_data.csv'
+
+URL = 'https://api.pushshift.io/reddit/search/submission'
+FILENAME = '{}_data.csv'.format(SUBREDDIT)
 DELIMITER = '|'
 FIELDNAMES = [
 	'created_utc',
@@ -101,39 +99,53 @@ FIELDNAMES = [
 	'wls',
 ]
 
-def get_last_date():
+def get_last_time():
+	"""Get latest time from CSV.
+	"""
+	last_line = ''
 	with open(FILENAME, 'r') as f:
-		last = list(csv.DictReader(f, delimiter=DELIMITER))[-1]
-		return int(last['created_utc'])
+		f.seek(0, 2)
+		fsize = f.tell()
+		f.seek(max (fsize-4096, 0), 0)
+		lines = f.read().splitlines()
+		last_line = lines[-1]
+	return last_line.split(DELIMITER)[0]
 
 def sanitize(s):
+	"""Sanitize whitespace and delimiter.
+	"""
 	res = s
 	res = res.replace(DELIMITER, ',')
 	res = ' '.join(res.split())
 	return res
 
-def get_data(start=0):
-	file_exists = False
-	if os.path.isfile(FILENAME):
-		file_exists = True
-		if start == 0:
-			start  = get_last_date()
+def save_data(data, write_header=False):
+	"""Append data to csv.
+	"""
+	with open(FILENAME, 'a', encoding='utf-8') as f:
+		dw = csv.DictWriter(f, delimiter=DELIMITER, extrasaction='ignore', fieldnames=FIELDNAMES)
+		if write_header:
+			dw.writeheader()
+		for datum in data:
+			dw.writerow(datum)
 
+def get_data(start_time=0):
 	# Request
 	params = {
 		'subreddit': SUBREDDIT,
 		'size': 500,
 		'sort': 'asc',
 		'sort_type': 'created_utc',
-		'after': start,
+		'after': start_time,
 	}
 	res = requests.get(URL, params=params)
 	if res.status_code != 200:
 		return None
 
+	# Data is a list of dicts
 	data = res.json()['data']
-	# print(json.dumps(data, indent=4, sort_keys=True))
-	print('Fetched', datetime.fromtimestamp(start))
+
+	# Sanitize values for csv
 	for i in range(len(data)):
 		for k in data[i]:
 			if isinstance(data[i][k], str):
@@ -142,19 +154,34 @@ def get_data(start=0):
 				dump = json.dumps(data[i][k])
 				data[i][k] = json.loads(sanitize(dump))
 
-	# Append to csv
-	with open(FILENAME, 'a', encoding='utf-8') as f:
-		dw = csv.DictWriter(f, delimiter=DELIMITER, extrasaction='ignore', fieldnames=FIELDNAMES)
-		# dw = csv.DictWriter(f, delimiter=DELIMITER, fieldnames=FIELDNAMES)
-		if not file_exists:
-			dw.writeheader()
-		for datum in data:
-			dw.writerow(datum)
+	# Append data to csv
+	save_data(data, write_header=(start_time == 0))
 
 	return data
 
-last_time = 0;
-for i in range(10000):
-	data = get_data(last_time)
-	if data is not None:
+if __name__ == '__main__':
+	# Start from last time in CSV
+	last_time = 0;
+	if os.path.isfile(FILENAME):
+		last_time = get_last_time()
+
+	# Run until CSV is up-to-date
+	while True:
+		# Get data
+		data = get_data(last_time)
+
+		# Data is none if request failed to fetch data
+		if data is None:
+			continue
+
+		# CSV is up-to-date
+		if len(data) == 0:
+			print('Up-to-date')
+			break
+
+		# Set latest time
 		last_time = data[-1]['created_utc']
+
+		print('Fetched {} - {}'.format(
+			datetime.fromtimestamp(data[0]['created_utc']),
+			datetime.fromtimestamp(last_time)))
